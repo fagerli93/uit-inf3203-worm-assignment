@@ -13,10 +13,13 @@ import (
 	"sync/atomic"
 )
 
+const RESP_TIMOUT = 503
+
 var wormgatePort string
 var segmentPort string
 
 var hostname string
+var ID int32
 
 var targetSegments int32
 
@@ -31,6 +34,7 @@ var activehosts []string
 func main() {
 
 	hostname, _ = os.Hostname()
+	ID = hostname.Split()
 	log.SetPrefix(hostname + " segment: ")
 
 	var spreadMode = flag.NewFlagSet("spread", flag.ExitOnError)
@@ -45,23 +49,38 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "spread":
-		spreadMode.Parse(os.Args[2:])
-		logger("test")
-		sendSegment(*spreadHost)
-	case "run":
-		runMode.Parse(os.Args[2:])
-		activehosts = append(activehosts, hostname)
-		startSegmentServer()
+		case "spread":
+			spreadMode.Parse(os.Args[2:])
+			logger("test")
+			sendSegment(*spreadHost)
+		case "run":
+			runMode.Parse(os.Args[2:])
+			startSegmentServer()
 
-	default:
-		log.Fatalf("Unknown mode %q\n", os.Args[1])
+		default:
+			log.Fatalf("Unknown mode %q\n", os.Args[1])
+	}
+}
+
+/* Parse stringname into an ID int32 */
+func parseHostname(hostname) int32 {
+	split := Split(hostname, "compute-");
+	split2 := Split(split[1], "-")
+	result_str := ""
+	for i := range split2 {
+		result_str += split2[i]
+	}
+	result, err := strconv.Atoi(result_str)
+	if(err != nil) {
+		return false;
+	} else {
+		return result;
 	}
 }
 
 func addCommonFlags(flagset *flag.FlagSet) {
-	flagset.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
-	flagset.StringVar(&segmentPort, "sp", ":8182", "segment port (prefix with colon)")
+	flagset.StringVar(&wormgatePort, "wp", ":51234", "wormgate port (prefix with colon)")
+	flagset.StringVar(&segmentPort, "sp", ":51235", "segment port (prefix with colon)")
 }
 
 func logger(msg string) {
@@ -93,7 +112,7 @@ func updateActiveSegmentsWithNewInfo(newts int32, newnode string){
 	for i:= range activehosts {
 		if(activehosts[i] != hostname && activehosts[i] != newnode){
 			updateTargetSegments(newts, activehosts[i])
-			updateActiveHostListRemote(newnode, activehosts[i])
+			updateActiveHostList(newnode, activehosts[i])
 		}
 	}
 }
@@ -101,7 +120,13 @@ func updateActiveSegmentsWithNewInfo(newts int32, newnode string){
 
 var segmentClient *http.Client
 
-func updateActiveHostListRemote(newnode string, node string) error{
+pingTimeout := time.Duration(200 * time.Millisecond)
+pingClient := http.Client {
+	Timeout: pingTimeout
+}
+
+
+func updateActiveHostList(newnode string, node string) error{
 	url := fmt.Sprintf("http://%s%s/updateactivehostlist", node, segmentPort)
 	postBody := strings.NewReader(fmt.Sprint(newnode))
 	resp, err := segmentClient.Post(url, "text/plain", postBody)
@@ -134,11 +159,10 @@ func findFreeNodeAddress()string{
 	for i := range reachablehosts{
 		for j := range activehosts{
 			if(reachablehosts[i] != hostname && reachablehosts[i] != activehosts[j]){
-				return reachablehosts[i]
+
 			}
 		}
 	}
-	return "ERROR"
 }
 /*
 func addMoreSegments(newTargetSegments int32){
@@ -158,30 +182,13 @@ func addMoreSegments(newTargetSegments int32){
 		}
 	}
 }
-
 */
-func update(newTargetSegments int32, new_node string){
-	//sends to ts to the newly created segment
-	updateTargetSegments(newTargetSegments, new_node)
-	//update all other active nodes with ts and new active segment
-	for i :=range activehosts{
-		if(activehosts[i] != hostname){
-			updateTargetSegments(newTargetSegments, activehosts[i])
-			updateActiveHostListRemote(new_node, activehosts[i])
-		}else{
-			atomic.StoreInt32(&targetSegments, newTargetSegments)
-			activehosts = append(activehosts, new_node)
-		}
-	}
-}
-
-
 func addMoreSegments(newTargetSegments int32){
 	for targetSegments < newTargetSegments{
 		new_node := findFreeNodeAddress()
 		resp := sendSegment(new_node)
 		if(resp == 200){
-			update(targetSegments+1, new_node)
+			updateTargetSegments(newTargetSegments, new_node)
 		}
 	}
 }
@@ -225,8 +232,8 @@ func startSegmentServer() {
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
 	http.HandleFunc("/updatetargetsegment", updateTargetSegmentsHandler)
-	//http.handleFunc("/updateactivehostlist", updateTargetSegmentsHandler2)
-	http.HandleFunc("/updateactivehostlist", updateActiveHostListLocal)
+	http.handleFunc("/updateactivehostlist", updateActiveHostListHandler)
+	http.HandleFunc("/ping", pingHandler)
 
 	log.Printf("Starting segment server on %s%s\n", hostname, segmentPort)
 	log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
@@ -242,6 +249,28 @@ func startSegmentServer() {
 	}
 }
 
+func pingHandler(w http.ResponseWriter, r *http.Request) {
+
+}
+
+
+func ping(node string) error {
+	url := fmt.Sprintf("http://%s%s/updateactivehostlist", node, segmentPort)
+	postBody := strings.NewReader(fmt.Sprint("ping"))
+
+	resp, err := pingClient.Post(url, "text/plain", postBody)
+	if resp.StatusCode == RESP_TIMOUT {
+		log.Println("Timeout from server - probably dead?")
+	}
+	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
+		log.Printf("Error posting targetSegments %s: %s", node, err)
+	}
+	if err == nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return err
+}
 
 
 
@@ -266,17 +295,6 @@ func updateTargetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body.Close()
 
 	atomic.StoreInt32(&targetSegments, ts)
-}
-func updateActiveHostListLocal(w http.ResponseWriter, r *http.Request) {
-	var host string
-	pc, rateErr := fmt.Fscanf(r.Body, "%d", &host)
-	if pc != 1 || rateErr != nil {
-		log.Printf("Error parsing targetSegments (%d items): %s", pc, rateErr)
-	}
-	io.Copy(ioutil.Discard, r.Body)
-	r.Body.Close()
-
-	activehosts = append(activehosts, host)
 }
 
 func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
