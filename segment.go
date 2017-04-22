@@ -45,22 +45,22 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "spread":
-		spreadMode.Parse(os.Args[2:])
-		logger("test")
-		sendSegment(*spreadHost)
-	case "run":
-		runMode.Parse(os.Args[2:])
-		startSegmentServer()
+		case "spread":
+			spreadMode.Parse(os.Args[2:])
+			logger("test")
+			sendSegment(*spreadHost)
+		case "run":
+			runMode.Parse(os.Args[2:])
+			startSegmentServer()
 
-	default:
-		log.Fatalf("Unknown mode %q\n", os.Args[1])
+		default:
+			log.Fatalf("Unknown mode %q\n", os.Args[1])
 	}
 }
 
 func addCommonFlags(flagset *flag.FlagSet) {
-	flagset.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
-	flagset.StringVar(&segmentPort, "sp", ":8182", "segment port (prefix with colon)")
+	flagset.StringVar(&wormgatePort, "wp", ":51234", "wormgate port (prefix with colon)")
+	flagset.StringVar(&segmentPort, "sp", ":51235", "segment port (prefix with colon)")
 }
 
 func logger(msg string) {
