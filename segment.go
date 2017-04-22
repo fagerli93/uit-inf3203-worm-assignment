@@ -45,22 +45,23 @@ func main() {
 	}
 
 	switch os.Args[1] {
-		case "spread":
-			spreadMode.Parse(os.Args[2:])
-			logger("test")
-			sendSegment(*spreadHost)
-		case "run":
-			runMode.Parse(os.Args[2:])
-			startSegmentServer()
+	case "spread":
+		spreadMode.Parse(os.Args[2:])
+		logger("test")
+		sendSegment(*spreadHost)
+	case "run":
+		runMode.Parse(os.Args[2:])
+		activehosts = append(activehosts, hostname)
+		startSegmentServer()
 
-		default:
-			log.Fatalf("Unknown mode %q\n", os.Args[1])
+	default:
+		log.Fatalf("Unknown mode %q\n", os.Args[1])
 	}
 }
 
 func addCommonFlags(flagset *flag.FlagSet) {
-	flagset.StringVar(&wormgatePort, "wp", ":51234", "wormgate port (prefix with colon)")
-	flagset.StringVar(&segmentPort, "sp", ":51235", "segment port (prefix with colon)")
+	flagset.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
+	flagset.StringVar(&segmentPort, "sp", ":8182", "segment port (prefix with colon)")
 }
 
 func logger(msg string) {
@@ -92,7 +93,7 @@ func updateActiveSegmentsWithNewInfo(newts int32, newnode string){
 	for i:= range activehosts {
 		if(activehosts[i] != hostname && activehosts[i] != newnode){
 			updateTargetSegments(newts, activehosts[i])
-			updateActiveHostList(newnode, activehosts[i])
+			updateActiveHostListRemote(newnode, activehosts[i])
 		}
 	}
 }
@@ -100,7 +101,7 @@ func updateActiveSegmentsWithNewInfo(newts int32, newnode string){
 
 var segmentClient *http.Client
 
-func updateActiveHostList(newnode string, node string) error{
+func updateActiveHostListRemote(newnode string, node string) error{
 	url := fmt.Sprintf("http://%s%s/updateactivehostlist", node, segmentPort)
 	postBody := strings.NewReader(fmt.Sprint(newnode))
 	resp, err := segmentClient.Post(url, "text/plain", postBody)
@@ -133,10 +134,11 @@ func findFreeNodeAddress()string{
 	for i := range reachablehosts{
 		for j := range activehosts{
 			if(reachablehosts[i] != hostname && reachablehosts[i] != activehosts[j]){
-
+				return reachablehosts[i]
 			}
 		}
 	}
+	return "ERROR"
 }
 /*
 func addMoreSegments(newTargetSegments int32){
@@ -156,13 +158,30 @@ func addMoreSegments(newTargetSegments int32){
 		}
 	}
 }
+
 */
+func update(newTargetSegments int32, new_node string){
+	//sends to ts to the newly created segment
+	updateTargetSegments(newTargetSegments, new_node)
+	//update all other active nodes with ts and new active segment
+	for i :=range activehosts{
+		if(activehosts[i] != hostname){
+			updateTargetSegments(newTargetSegments, activehosts[i])
+			updateActiveHostListRemote(new_node, activehosts[i])
+		}else{
+			atomic.StoreInt32(&targetSegments, newTargetSegments)
+			activehosts = append(activehosts, new_node)
+		}
+	}
+}
+
+
 func addMoreSegments(newTargetSegments int32){
 	for targetSegments < newTargetSegments{
 		new_node := findFreeNodeAddress()
 		resp := sendSegment(new_node)
 		if(resp == 200){
-			updateTargetSegments(newTargetSegments, new_node)
+			update(targetSegments+1, new_node)
 		}
 	}
 }
@@ -206,7 +225,8 @@ func startSegmentServer() {
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
 	http.HandleFunc("/updatetargetsegment", updateTargetSegmentsHandler)
-	http.handleFunc("/updateactivehostlist", updateActiveHostListHandler)
+	//http.handleFunc("/updateactivehostlist", updateTargetSegmentsHandler2)
+	http.HandleFunc("/updateactivehostlist", updateActiveHostListLocal)
 
 	log.Printf("Starting segment server on %s%s\n", hostname, segmentPort)
 	log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
@@ -246,6 +266,17 @@ func updateTargetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body.Close()
 
 	atomic.StoreInt32(&targetSegments, ts)
+}
+func updateActiveHostListLocal(w http.ResponseWriter, r *http.Request) {
+	var host string
+	pc, rateErr := fmt.Fscanf(r.Body, "%d", &host)
+	if pc != 1 || rateErr != nil {
+		log.Printf("Error parsing targetSegments (%d items): %s", pc, rateErr)
+	}
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+
+	activehosts = append(activehosts, host)
 }
 
 func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
