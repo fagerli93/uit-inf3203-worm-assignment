@@ -23,9 +23,11 @@ import (
 const minx, maxx = 1, 3
 const miny, maxy = 0, 59
 const colwidth = 20
-const refreshRate = 100 * time.Millisecond
-const pollRate = refreshRate / 2
+const refreshRate = 200 * time.Millisecond
+const pollRate = refreshRate
 const pollErrWait = 20 * time.Second
+
+var maxRunTime time.Duration
 
 var wormgatePort string
 var segmentPort string
@@ -67,6 +69,7 @@ func createClient() *http.Client {
 func main() {
 	flag.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
 	flag.StringVar(&segmentPort, "sp", ":8182", "segment port (prefix with colon)")
+	flag.DurationVar(&maxRunTime, "maxrun", time.Minute*10, "max time to run (in case you forget to shut down)")
 	flag.Parse()
 
 	nodes := rocks.ListNodes()
@@ -81,11 +84,22 @@ func main() {
 	segmentClient = createClient()
 	wormgateClient = createClient()
 
-	// Catch interrupt and quit
+	// Quit if interrupt
 	interrupt := make(chan os.Signal, 2)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+
+	exitReason := make(chan string, 1)
 	go func() {
-		<-interrupt
+		time.Sleep(maxRunTime)
+		exitReason <- fmt.Sprintf("maxrun timeout: %s", maxRunTime)
+	}()
+	go func() {
+		select {
+			case signal := <-interrupt:
+				log.Printf("Got signal %s", signal)
+			case reason := <-exitReason:
+				log.Printf(reason)
+		}
 		fmt.Print(ansi_clear_to_end)
 		fmt.Println()
 		log.Print("Shutting down")

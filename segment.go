@@ -14,7 +14,10 @@ import (
 	"time"
 	"strconv"
 	"sync"
+
 )
+
+var maxRunTime time.Duration
 
 var wormgatePort string
 var segmentPort string
@@ -80,6 +83,7 @@ func main() {
 func addCommonFlags(flagset *flag.FlagSet) {
 	flagset.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
 	flagset.StringVar(&segmentPort, "sp", ":8182", "segment port (prefix with colon)")
+	flagset.DurationVar(&maxRunTime, "maxrun", time.Minute*10, "max time to run (in case you forget to shut down)")
 }
 
 func logger(msg string) {
@@ -310,7 +314,23 @@ func sendSegment(address string) int{
 }
 
 func startSegmentServer() {
+
 	log.Printf("iam here in start startSegmentServer now")
+
+	// Quit if maxRunTime timeout
+	exitReason := make(chan string, 1)
+	go func() {
+		time.Sleep(maxRunTime)
+		exitReason <- fmt.Sprintf("maxrun timeout: %s", maxRunTime)
+	}()
+	go func() {
+		reason := <-exitReason
+		log.Printf(reason)
+		log.Print("Shutting down")
+		os.Exit(0)
+	}()
+
+
 	http.HandleFunc("/", IndexHandler)
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/ping", pingHandler)
@@ -496,9 +516,7 @@ func httpGetOk(client *http.Client, url string) (bool, string, error) {
 
 func ping(reachablehost string, channel chan hoststatus, wg *sync.WaitGroup, i int){
 
-	//defer wg.Done()
 	var status bool
-	//var err = nil
 	url := fmt.Sprintf("http://%s%s/", reachablehost, segmentPort)
 
 
@@ -516,32 +534,18 @@ func ping(reachablehost string, channel chan hoststatus, wg *sync.WaitGroup, i i
 			host.status = 0
 		}
 	}
-	//log.Printf("WOOT!")
 	channel <- *host
 	log.Println("host addr["+strconv.Itoa(i)+"]: "+host.addr+" host status: "+strconv.Itoa(host.status))
 	wg.Done()
-
-
-	//time.Sleep(time.Second * 1)
-
 }
 
 func checkAll(){
-	log.Printf("len: "+strconv.Itoa(len(reachablehosts)-1))
-	/*for i:= range reachablehosts {
-		if reachablehosts[i] != hostname2{
-			log.Printf("reachablehosts["+strconv.Itoa(i)+"]: "+ reachablehosts[i])
-		}
-	}*/
-
 	var wg sync.WaitGroup
-	//var wg1 sync.WaitGroup
 	for{
 		c := make(chan hoststatus, len(reachablehosts)-1)
 		for i:= range reachablehosts {
 			if reachablehosts[i] != hostname2{
 				wg.Add(1)
-				//log.Printf("makeing pings at: "+reachablehosts[i])
 				go ping(reachablehosts[i], c, &wg, i)
 			}
 		}
@@ -568,13 +572,11 @@ func updateActiveHostList1(channel chan hoststatus){
 			}
 		}else{
 			if contains(activehosts, host.addr) == true{
-				log.Printf("noting to remove["+strconv.Itoa(i)+"]")
+				//log.Printf("noting to remove["+strconv.Itoa(i)+"]")
 				activehosts = remove(activehosts, host.addr)
 			}
 		}
 		i = i+1
 	}
-	log.Printf("done")
 
-	//wg1.Done()
 }
