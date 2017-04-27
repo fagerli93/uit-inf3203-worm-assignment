@@ -11,12 +11,18 @@ import (
 	"os/exec"
 	"strings"
 	"sync/atomic"
+	"time"
+	"strconv"
+	"sync"
 )
 
 var wormgatePort string
 var segmentPort string
 
 var hostname string
+
+//host name with out .local at the end
+var hostname2 string
 
 var targetSegments int32
 
@@ -25,6 +31,15 @@ var reachablehosts []string
 
 var activehosts []string
 
+var SLEEPTIME = 1
+
+
+
+
+type hoststatus struct {
+    addr string
+    status int
+}
 
 
 
@@ -32,7 +47,7 @@ func main() {
 
 	hostname, _ = os.Hostname()
 	log.SetPrefix(hostname + " segment: ")
-
+	segmentClient = createClient()
 	var spreadMode = flag.NewFlagSet("spread", flag.ExitOnError)
 	addCommonFlags(spreadMode)
 	var spreadHost = spreadMode.String("host", "localhost", "host to spread to")
@@ -47,11 +62,14 @@ func main() {
 	switch os.Args[1] {
 	case "spread":
 		spreadMode.Parse(os.Args[2:])
-		logger("test")
+		//logger("test")
 		sendSegment(*spreadHost)
 	case "run":
 		runMode.Parse(os.Args[2:])
-		activehosts = append(activehosts, hostname)
+		//hostname2 = strings.Trim(hostname, ".local")
+		hostname2 = hostname[:len(hostname)-6]
+
+		activehosts = append(activehosts, hostname2)
 		startSegmentServer()
 
 	default:
@@ -88,19 +106,25 @@ func CheckReachableHostsForSegments() {
 		}
 	}
 }*/
+/*
 func updateActiveSegmentsWithNewInfo(newts int32, newnode string){
 
 	for i:= range activehosts {
-		if(activehosts[i] != hostname && activehosts[i] != newnode){
+		if(activehosts[i] != hostname2 && activehosts[i] != newnode){
 			updateTargetSegments(newts, activehosts[i])
 			updateActiveHostListRemote(newnode, activehosts[i])
 		}
 	}
 }
-
-
+*/
+func createClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{},
+	}
+}
 var segmentClient *http.Client
 
+//SENDS FROM THE ONE NODE TO ANOTHER NODE THE ACTIVE HOST LIST
 func updateActiveHostListRemote(newnode string, node string) error{
 	url := fmt.Sprintf("http://%s%s/updateactivehostlist", node, segmentPort)
 	postBody := strings.NewReader(fmt.Sprint(newnode))
@@ -129,17 +153,38 @@ func updateTargetSegments(newts int32, node string) error {
 	}
 	return err
 }
-
+func contains(s []string, e string) bool {
+    for _, a := range s {
+        if a == e {
+            return true
+        }
+    }
+    return false
+}
+func findFreeNodeAddress()string{
+	for i := range reachablehosts{
+		if reachablehosts[i] != hostname2{
+			if contains(activehosts, reachablehosts[i]) == false {
+				return reachablehosts[i]
+			}
+		}
+	}
+	return "-NO MORE FREE DDRESSES-"
+}
+/*
 func findFreeNodeAddress()string{
 	for i := range reachablehosts{
 		for j := range activehosts{
-			if(reachablehosts[i] != hostname && reachablehosts[i] != activehosts[j]){
+			if(reachablehosts[i] != hostname2) && (reachablehosts[i] != activehosts[j]){
+				log.Println("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+				log.Println("reachablehosts: "+reachablehosts[i]+" hostname: "+hostname2+" activehost: "+activehosts[j])
+				log.Println("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 				return reachablehosts[i]
 			}
 		}
 	}
 	return "ERROR"
-}
+}*/
 /*
 func addMoreSegments(newTargetSegments int32){
 	Loop:
@@ -162,27 +207,72 @@ func addMoreSegments(newTargetSegments int32){
 */
 func update(newTargetSegments int32, new_node string){
 	//sends to ts to the newly created segment
+	atomic.StoreInt32(&targetSegments, newTargetSegments)
+	activehosts = append(activehosts, new_node)
 	updateTargetSegments(newTargetSegments, new_node)
+	time.Sleep(time.Second * 1)
+	test := updateActiveHostListNewNode(new_node)
+	log.Println("HHHHHHHHHHHHHHHHHHHHHHHHHHH")
+	log.Println(test)
+	log.Println("HHHHHHHHHHHHHHHHHHHHHHHHHHH")
+
 	//update all other active nodes with ts and new active segment
 	for i :=range activehosts{
-		if(activehosts[i] != hostname){
+		if activehosts[i] != hostname2 && activehosts[i] == new_node{
 			updateTargetSegments(newTargetSegments, activehosts[i])
 			updateActiveHostListRemote(new_node, activehosts[i])
-		}else{
-			atomic.StoreInt32(&targetSegments, newTargetSegments)
-			activehosts = append(activehosts, new_node)
 		}
+
 	}
+}
+//UPDATES THE NEW NODES WE CREATED WITH ALL ACTIVE HOSTS
+func updateActiveHostListNewNode(node string) error{
+
+	url := fmt.Sprintf("http://%s%s/updateactivehostlistnewnode", node, segmentPort)
+	log.Println("++++++++++++++++++++++++++++++++++++++++++++")
+	stringActiveHosts :=strings.Join(activehosts, " ")
+	log.Println("stringActiveHosts: '"+stringActiveHosts+"'")
+	log.Println("++++++++++++++++++++++++++++++++++++++++++++")
+
+	postBody := strings.NewReader(fmt.Sprint(stringActiveHosts))
+	resp, err := segmentClient.Post(url, "text/plain", postBody)
+	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
+		log.Printf("Error posting updateActiveHostLIstNewNOde %s: %s", node, err)
+	}
+	if err == nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return err
+
+
 }
 
 
 func addMoreSegments(newTargetSegments int32){
-	for targetSegments < newTargetSegments{
-		new_node := findFreeNodeAddress()
+	ts := atomic.LoadInt32(&targetSegments)
+	var new_node string
+	for ts < newTargetSegments{
+		new_node = findFreeNodeAddress()
+		//log.Println("++++++++++++++++++++++++++++++++")
+		//log.Println("new_node: "+new_node)
+		//log.Println("active_host:"+fmt.Sprint(activehosts))
+
+		//log.Println("++++++++++++++++++++++++++++++++")
 		resp := sendSegment(new_node)
 		if(resp == 200){
-			update(targetSegments+1, new_node)
+			log.Println("--------------------------------")
+			log.Println("targetSegments: "+fmt.Sprint(ts)+" -- new_node: "+new_node+" --active:hosts:'"+activehosts[0]+"'")
+			log.Println("--------------------------------")
+			update(ts+1, new_node)
+			//atomic.StoreInt32(&targetSegments, newTargetSegments)
+			ts = atomic.LoadInt32(&targetSegments)
+			//log.Println("*********************************")
+			//log.Println("targetSegments: "+fmt.Sprint(ts))
+			//log.Println("*********************************")
 		}
+		time.Sleep(time.Second * 1)
+
 	}
 }
 
@@ -223,29 +313,50 @@ func startSegmentServer() {
 	log.Printf("iam here in start startSegmentServer now")
 	http.HandleFunc("/", IndexHandler)
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
+	http.HandleFunc("/ping", pingHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
 	http.HandleFunc("/updatetargetsegment", updateTargetSegmentsHandler)
 	//http.handleFunc("/updateactivehostlist", updateTargetSegmentsHandler2)
-	http.HandleFunc("/updateactivehostlist", updateActiveHostListLocal)
+	http.HandleFunc("/updateactivehostlist", updateActiveHostListLocalHandler)
+	http.HandleFunc("/updateactivehostlistnewnode", updateActiveHostListNewNodeHandler)
 
 	log.Printf("Starting segment server on %s%s\n", hostname, segmentPort)
-	log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
+	//log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
 	//var tmp = fetchReachableHosts()
 	//log.Printf(tmp[0])
 	reachablehosts = append(reachablehosts, fetchReachableHosts()...)
+	//STARTS TO PING SEGMENTS
 
 
+	var ts int32
+	ts = 1
+	atomic.StoreInt32(&targetSegments, ts)
 
+	log.Printf("ALSO HERE")
+	go checkAll()
+	log.Printf("YOUOHJDS")
 	err := http.ListenAndServe(segmentPort, nil)
 	if err != nil {
 		log.Panic(err)
 	}
+	log.Printf("CHECKING: ")
+	//checkAll()
 }
 
 
 
 
 func IndexHandler(w http.ResponseWriter, r *http.Request) {
+
+	// We don't use the request body. But we should consume it anyway.
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+
+	killRateGuess := 2.0
+
+	fmt.Fprintf(w, "%.3f\n", killRateGuess)
+}
+func pingHandler(w http.ResponseWriter, r *http.Request) {
 
 	// We don't use the request body. But we should consume it anyway.
 	io.Copy(ioutil.Discard, r.Body)
@@ -267,11 +378,11 @@ func updateTargetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	atomic.StoreInt32(&targetSegments, ts)
 }
-func updateActiveHostListLocal(w http.ResponseWriter, r *http.Request) {
+func updateActiveHostListLocalHandler(w http.ResponseWriter, r *http.Request) {
 	var host string
 	pc, rateErr := fmt.Fscanf(r.Body, "%d", &host)
 	if pc != 1 || rateErr != nil {
-		log.Printf("Error parsing targetSegments (%d items): %s", pc, rateErr)
+		log.Printf("Error parsing targetSegments (%ds items): %s", pc, rateErr)
 	}
 	io.Copy(ioutil.Discard, r.Body)
 	r.Body.Close()
@@ -292,9 +403,9 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body.Close()
 	//var test = "New targetSegments: "+ts
 	//logger("New targetSegments: "+strconv.Itoa(int(ts)))
-	addMoreSegments(ts)
+	//addMoreSegments(ts)
 	log.Println("New targetSegments: %d", ts)
-	atomic.StoreInt32(&targetSegments, ts)
+	//atomic.StoreInt32(&targetSegments, ts)
 	log.Println("targetSegment: %d", atomic.LoadInt32(&targetSegments))
 }
 
@@ -338,4 +449,132 @@ func fetchReachableHosts() []string {
 
 
 	return nodes
+}
+
+func updateActiveHostListNewNodeHandler(w http.ResponseWriter, r *http.Request){
+	log.Println("AAAAAAAAAAAAAAAAA")
+	var hostListString string
+	pc, rateErr := fmt.Fscanf(r.Body, "%d", &hostListString)
+	if pc != 1 || rateErr != nil {
+		log.Printf("Error parsing updateActiveHostListNewNodeHandler (%s items): %s", pc, rateErr)
+	}
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+
+	strSlice := strings.Fields(hostListString)
+	log.Println("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	log.Println("hostListString: "+hostListString)
+	//log.Println("strSlice: "+strSlice)
+	log.Println("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	for i:=range strSlice{
+		if contains(activehosts, strSlice[i]) == false{
+			activehosts = append(activehosts, strSlice[i])
+		}
+	}
+
+}
+
+func httpGetOk(client *http.Client, url string) (bool, string, error) {
+	resp, err := client.Get(url)
+	isOk := err == nil && resp.StatusCode == 200
+	body := ""
+	if err != nil {
+		if strings.Contains(fmt.Sprint(err), "connection refused") {
+			// ignore connection refused errors
+			err = nil
+		} else {
+			log.Printf("Error pinging %s: %s", url, err)
+		}
+	} else {
+		var bytes []byte
+		bytes, err = ioutil.ReadAll(resp.Body)
+		body = string(bytes)
+		resp.Body.Close()
+	}
+	return isOk, body, err
+}
+
+func ping(reachablehost string, channel chan hoststatus, wg *sync.WaitGroup, i int){
+
+	//defer wg.Done()
+	var status bool
+	//var err = nil
+	url := fmt.Sprintf("http://%s%s/", reachablehost, segmentPort)
+
+
+	status, _, _ = httpGetOk(segmentClient, url)
+
+	host := new(hoststatus)
+	host.addr = reachablehost
+
+	if status == true {
+		if contains(activehosts, reachablehost) == false {
+			host.status = 1
+		}
+	}else{
+		if contains(activehosts, reachablehost) == true {
+			host.status = 0
+		}
+	}
+	//log.Printf("WOOT!")
+	channel <- *host
+	log.Println("host addr["+strconv.Itoa(i)+"]: "+host.addr+" host status: "+strconv.Itoa(host.status))
+	wg.Done()
+
+
+	//time.Sleep(time.Second * 1)
+
+}
+
+func checkAll(){
+	log.Printf("len: "+strconv.Itoa(len(reachablehosts)-1))
+	/*for i:= range reachablehosts {
+		if reachablehosts[i] != hostname2{
+			log.Printf("reachablehosts["+strconv.Itoa(i)+"]: "+ reachablehosts[i])
+		}
+	}*/
+
+	var wg sync.WaitGroup
+	//var wg1 sync.WaitGroup
+	for{
+		c := make(chan hoststatus, len(reachablehosts)-1)
+		for i:= range reachablehosts {
+			if reachablehosts[i] != hostname2{
+				wg.Add(1)
+				//log.Printf("makeing pings at: "+reachablehosts[i])
+				go ping(reachablehosts[i], c, &wg, i)
+			}
+		}
+
+
+		log.Printf("+++++++++++++++++++++++++++++++++++")
+		wg.Wait()
+		close(c)
+		updateActiveHostList1(c)
+		log.Printf("-----------------------------------")
+
+		//wg1.Wait()
+	}
+}
+func updateActiveHostList1(channel chan hoststatus){
+	//defer wg1.Done()
+	var i = 0
+	log.Printf("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+	for  host := range channel {
+
+		if host.status == 1 {
+			if contains(activehosts, host.addr) == false {
+				activehosts = append(activehosts, host.addr)
+			}
+		}else{
+			if contains(activehosts, host.addr) == true{
+				log.Printf("noting to remove["+strconv.Itoa(i)+"]")
+				activehosts = remove(activehosts, host.addr)
+			}
+		}
+		i = i+1
+	}
+	log.Printf("done")
+
+	//wg1.Done()
 }

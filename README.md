@@ -96,16 +96,16 @@ Build the Go source:
 
 Start the command and report center / visualizer (press Ctrl+C to exit):
 
-    ./visualize -wp :8181 -sp :8182
+    ./visualize -wp :7654 -sp :7653
 
 Start a worm gate on one compute node (you'll want to do this in another
 terminal window so you can leave the visualizer running):
 
-    ssh compute-1-1 "$PWD/wormgate" -wp :8181 -sp :8182
+    ssh compute-1-1 "$PWD/wormgate" -wp :7654 -sp :7653
 
 Spread the worm to the compute node:
 
-    ./segment spread -wp :8181 -sp :8182 -host compute-1-1
+    ./segment spread -wp :7654 -sp :7653 -host compute-1-1
 
 Kill all of your processes on all compute nodes and clean up temporary files:
 
@@ -255,7 +255,7 @@ Other handy commands
 every node in the cluster:
 
     # Start wormgate on all compute nodes
-    ./ssh-all.sh "$PWD/wormgate" -wp :8181
+    ./ssh-all.sh "$PWD/wormgate" -wp :7654
 
     # Kill segment on all compute nodes
     ./ssh-all.sh killall segment
