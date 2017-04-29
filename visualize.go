@@ -79,7 +79,7 @@ func main() {
 		statusMap.m[node] = status{}
 	}
 
-	targetSegments = 5
+	targetSegments = 1
 
 	segmentClient = createClient()
 	wormgateClient = createClient()
