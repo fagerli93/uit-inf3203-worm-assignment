@@ -134,6 +134,7 @@ func findFreeNodeAddress()string{
 	for i := range reachablehosts{
 		if reachablehosts[i] != hostname2{
 			if contains(activehosts, reachablehosts[i]) == false {
+				log.Printf("activehosts: "+fmt.Sprint(activehosts)+" reachablehosts[i]: "+reachablehosts[i])
 				return reachablehosts[i]
 			}
 		}
@@ -345,6 +346,7 @@ func fetchReachableHosts() []string {
 	nodes = remove(nodes, "compute-1-4")
 	nodes = remove(nodes, "compute-2-20")
 
+	//tmp_nodes := []string{"compute-1-0", "compute-1-1", "compute-1-2", "compute-1-3"}
 
 	return nodes
 }
@@ -373,7 +375,7 @@ func httpGetOk(client *http.Client, url string) (bool, string, error) {
 func ping(reachablehost string, channel chan hoststatus, wg *sync.WaitGroup, i int){
 
 	var status bool
-	url := fmt.Sprintf("http://%s%s/", reachablehost, segmentPort)
+	url := fmt.Sprintf("http://%s%s/ping", reachablehost, segmentPort)
 
 
 	status, _, _ = httpGetOk(segmentClient, url)
@@ -382,13 +384,13 @@ func ping(reachablehost string, channel chan hoststatus, wg *sync.WaitGroup, i i
 	host.addr = reachablehost
 
 	if status == true {
-		if contains(activehosts, reachablehost) == false {
-			host.status = 1
-		}
+
+		host.status = 1
+
 	}else{
-		if contains(activehosts, reachablehost) == true {
-			host.status = 0
-		}
+
+		host.status = 0
+
 	}
 	channel <- *host
 	//log.Println("host addr["+strconv.Itoa(i)+"]: "+host.addr+" host status: "+strconv.Itoa(host.status))
@@ -420,15 +422,15 @@ func checkAll(){
 }
 func updateActiveHostList1(channel chan hoststatus){
 	//defer wg1.Done()
-	var i = 0
+
 	//log.Printf("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
 
 	for  host := range channel {
 
 		if host.status == 1 {
-
+			log.Printf("ADD2: host.add: "+host.addr)
 			if contains(activehosts, host.addr) == false {
-
+				log.Printf("ADD: host.add: "+host.addr)
 				activehosts = append(activehosts, host.addr)
 			}
 		}else{
@@ -436,11 +438,12 @@ func updateActiveHostList1(channel chan hoststatus){
 			if contains(activehosts, host.addr) == true{
 
 				//log.Printf("noting to remove["+strconv.Itoa(i)+"]")
+				log.Printf("REMOVE: host.add: "+host.addr)
 				activehosts = remove(activehosts, host.addr)
 			}
 		}
 
-		i = i+1
+
 	}
 
 }
@@ -449,21 +452,21 @@ func AddOrRemoveSegments(){
 	ts := atomic.LoadInt32(&targetSegments)
 
 	numberOfActiveSegments := len(activehosts)
-	if hostname2 == "compute-1-1"{
-		log.Printf("numberOfActiveSegments: "+strconv.Itoa(numberOfActiveSegments)+" ts: "+fmt.Sprint(ts))
-	}
-	//log.Printf("numberOfActiveSegments: "+strconv.Itoa(numberOfActiveSegments)+" ts: "+fmt.Sprint(ts))
+
+	log.Printf("numberOfActiveSegments: "+strconv.Itoa(numberOfActiveSegments)+" ts: "+fmt.Sprint(ts)+" list: "+fmt.Sprint(activehosts))
 	if numberOfActiveSegments < int(ts) {
+		log.Printf("+++++++++++++++++++")
 		host := findFreeNodeAddress()
 		if host != "-NO MORE FREE DDRESSES-" {
 			sendSegment(host)
 			updateTargetSegments(ts, host)
 			activehosts = append(activehosts, host)
-			log.Printf("+++++++++++++++++++")
-			log.Printf(fmt.Sprint(activehosts))
 
+			log.Printf(fmt.Sprint(activehosts))
+			log.Printf("+++++++++++++++++++")
 		}
 	}
+
 	if numberOfActiveSegments > int(ts) {
 		host := findTakenNodeAddress()
 		if host != "-NO MORE TAKEN ADDRESSES-" {
