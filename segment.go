@@ -425,12 +425,13 @@ func checkAll(){
 
 	var wg sync.WaitGroup
 	for{
+		reachablehosts2 = fetchReachableHosts()
 		oldactivehosts = activehosts
-		c := make(chan hoststatus, len(reachablehosts)-1)
-		for i:= range reachablehosts {
-			if reachablehosts[i] != hostname2{
+		c := make(chan hoststatus, len(reachablehosts2)-1)
+		for i:= range reachablehosts2 {
+			if reachablehosts2[i] != hostname2{
 				wg.Add(1)
-				go ping(reachablehosts[i], c, &wg, i)
+				go ping(reachablehosts2[i], c, &wg, i)
 			}
 		}
 
