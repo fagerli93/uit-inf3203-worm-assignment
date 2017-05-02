@@ -34,7 +34,10 @@ var reachablehosts []string
 
 var activehosts []string
 
+var oldactivehosts []string
+
 var SLEEPTIME = 1
+var killrate int
 
 
 
@@ -134,7 +137,7 @@ func findFreeNodeAddress()string{
 	for i := range reachablehosts{
 		if reachablehosts[i] != hostname2{
 			if contains(activehosts, reachablehosts[i]) == false {
-				log.Printf("activehosts: "+fmt.Sprint(activehosts)+" reachablehosts[i]: "+reachablehosts[i])
+				//log.Printf("activehosts: "+fmt.Sprint(activehosts)+" reachablehosts[i]: "+reachablehosts[i])
 				return reachablehosts[i]
 			}
 		}
@@ -195,6 +198,7 @@ func startSegmentServer() {
 	//log.Printf("test")
 	var ts int32
 	ts = 1
+	killrate = 0
 	atomic.StoreInt32(&targetSegments, ts)
 	reachablehosts = append(reachablehosts, fetchReachableHosts()...)
 	findTs()
@@ -219,6 +223,7 @@ func startSegmentServer() {
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/ping", pingHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
+	http.HandleFunc("/shutdown2", shutdownHandler2)
 	http.HandleFunc("/updatetargetsegment", updateTargetSegmentsHandler)
 	http.HandleFunc("/findts", findTsHandler)
 
@@ -251,7 +256,8 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(ioutil.Discard, r.Body)
 	r.Body.Close()
 
-	killRateGuess := 2.0
+	//killRateGuess := 2.0
+	killRateGuess := float32(killrate)
 
 	fmt.Fprintf(w, "%.3f\n", killRateGuess)
 }
@@ -302,7 +308,7 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 func spreadTs(ts int32){
 	for i :=range activehosts{
 		if activehosts[i] != hostname2 {
-			log.Println("spreading ts to: "+activehosts[i])
+			//log.Println("spreading ts to: "+activehosts[i])
 			updateTargetSegments(ts, activehosts[i])
 		}
 	}
@@ -319,6 +325,24 @@ func remove(s []string, r string) []string {
 
 
 func shutdownHandler(w http.ResponseWriter, r *http.Request) {
+
+	// Consume and close body
+	var wg sync.WaitGroup
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+	for i:= range activehosts {
+		if activehosts[i] != hostname2 {
+			wg.Add(1)
+			go doAllWormShutdownPost(activehosts[i], &wg)
+		}
+	}
+
+	// Shut down
+	wg.Wait()
+	log.Printf("Received shutdown command, committing suicide")
+	os.Exit(0)
+}
+func shutdownHandler2(w http.ResponseWriter, r *http.Request) {
 
 	// Consume and close body
 	io.Copy(ioutil.Discard, r.Body)
@@ -398,8 +422,10 @@ func ping(reachablehost string, channel chan hoststatus, wg *sync.WaitGroup, i i
 }
 
 func checkAll(){
+
 	var wg sync.WaitGroup
 	for{
+		oldactivehosts = activehosts
 		c := make(chan hoststatus, len(reachablehosts)-1)
 		for i:= range reachablehosts {
 			if reachablehosts[i] != hostname2{
@@ -415,6 +441,7 @@ func checkAll(){
 		updateActiveHostList1(c)
 
 		AddOrRemoveSegments()
+		calcKillRate()
 		//log.Printf("-----------------------------------")
 
 		//wg1.Wait()
@@ -428,9 +455,9 @@ func updateActiveHostList1(channel chan hoststatus){
 	for  host := range channel {
 
 		if host.status == 1 {
-			log.Printf("ADD2: host.add: "+host.addr)
+			//log.Printf("ADD2: host.add: "+host.addr)
 			if contains(activehosts, host.addr) == false {
-				log.Printf("ADD: host.add: "+host.addr)
+				//log.Printf("ADD: host.add: "+host.addr)
 				activehosts = append(activehosts, host.addr)
 			}
 		}else{
@@ -438,7 +465,7 @@ func updateActiveHostList1(channel chan hoststatus){
 			if contains(activehosts, host.addr) == true{
 
 				//log.Printf("noting to remove["+strconv.Itoa(i)+"]")
-				log.Printf("REMOVE: host.add: "+host.addr)
+				//log.Printf("REMOVE: host.add: "+host.addr)
 				activehosts = remove(activehosts, host.addr)
 			}
 		}
@@ -453,17 +480,17 @@ func AddOrRemoveSegments(){
 
 	numberOfActiveSegments := len(activehosts)
 
-	log.Printf("numberOfActiveSegments: "+strconv.Itoa(numberOfActiveSegments)+" ts: "+fmt.Sprint(ts)+" list: "+fmt.Sprint(activehosts))
+	//log.Printf("numberOfActiveSegments: "+strconv.Itoa(numberOfActiveSegments)+" ts: "+fmt.Sprint(ts)+" list: "+fmt.Sprint(activehosts))
 	if numberOfActiveSegments < int(ts) {
-		log.Printf("+++++++++++++++++++")
+		//log.Printf("+++++++++++++++++++")
 		host := findFreeNodeAddress()
 		if host != "-NO MORE FREE DDRESSES-" {
 			sendSegment(host)
 			updateTargetSegments(ts, host)
 			activehosts = append(activehosts, host)
 
-			log.Printf(fmt.Sprint(activehosts))
-			log.Printf("+++++++++++++++++++")
+			//log.Printf(fmt.Sprint(activehosts))
+			//log.Printf("+++++++++++++++++++")
 		}
 	}
 
@@ -481,6 +508,22 @@ func AddOrRemoveSegments(){
 func doWormShutdownPost(node string) error {
 	log.Printf("Posting shutdown to %s", node)
 
+	url := fmt.Sprintf("http://%s%s/shutdown2", node, segmentPort)
+
+	resp, err := segmentClient.PostForm(url, nil)
+	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
+		log.Printf("Error posting targetSegments %s: %s", node, err)
+	}
+	if err == nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return err
+}
+
+func doAllWormShutdownPost(node string, wg *sync.WaitGroup) error {
+	log.Printf("Posting shutdown to %s", node)
+
 	url := fmt.Sprintf("http://%s%s/shutdown", node, segmentPort)
 
 	resp, err := segmentClient.PostForm(url, nil)
@@ -491,6 +534,7 @@ func doWormShutdownPost(node string) error {
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}
+	wg.Done()
 	return err
 }
 
@@ -508,12 +552,12 @@ func findTs(){
 
 				if status == true{
 					conv_ts, _ := strconv.ParseInt(ts,10,32)
-					log.Println("-------------------------")
+					//log.Println("-------------------------")
 					//ts1 := strings.TrimRight(ts, "\n")
-					log.Println(strconv.Atoi(ts))
-					log.Println("-------------------------")
+					//log.Println(strconv.Atoi(ts))
+					//log.Println("-------------------------")
 					atomic.StoreInt32(&targetSegments, int32(conv_ts))
-					log.Println("findTS: "+strconv.FormatBool(status)+" ts_string: "+ts+" checking"+reachablehosts[i]+ " atomic: "+strconv.Itoa(int(targetSegments)))
+					//log.Println("findTS: "+strconv.FormatBool(status)+" ts_string: "+ts+" checking"+reachablehosts[i]+ " atomic: "+strconv.Itoa(int(targetSegments)))
 					break
 				}
 		}
@@ -530,6 +574,21 @@ func findTsHandler(w http.ResponseWriter, r *http.Request) {
 	ts := atomic.LoadInt32(&targetSegments)
 
 	//fmt.Fprintf(w, fmt.Sprintf(ts))
-	log.Println("handleTS: "+fmt.Sprint(ts))
+	//log.Println("handleTS: "+fmt.Sprint(ts))
 	fmt.Fprintf(w, "%d", ts)
+}
+
+func calcKillRate(){
+	old := len(oldactivehosts)
+	new := len(activehosts)
+
+
+
+	if new < old{
+		killrate = old - new
+		log.Printf("---------------------")
+
+	}else{
+		killrate = 0
+	}
 }
